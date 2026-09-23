@@ -112,6 +112,58 @@
   .legend-item { display: inline-flex; align-items: center; gap: 5px; }
   .legend-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
   .chart-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--text); }
+  .chart-toolbar {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .chart-toolbar .btn { padding: 4px 10px; font-size: 12px; }
+  .axis-editor {
+    display: none;
+    margin-bottom: 10px;
+    padding: 10px;
+    background: #f8f9fa;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .axis-editor.show { display: block; }
+  .axis-editor textarea {
+    width: 100%;
+    min-height: 70px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--text);
+    resize: vertical;
+    outline: none;
+  }
+  .axis-editor textarea:focus { border-color: var(--accent); }
+  .axis-editor label {
+    display: block;
+    font-size: 12px;
+    color: var(--text2);
+    margin-bottom: 4px;
+  }
+  .chart-title-input {
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 3px 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    outline: none;
+    border-radius: 3px;
+    font-family: inherit;
+    min-width: 220px;
+    flex: 1;
+    max-width: 420px;
+  }
+  .chart-title-input:hover { border-color: var(--border); }
+  .chart-title-input:focus { border-color: var(--accent); background: var(--surface); }
   .fold-up { color: var(--bad); font-weight: 600; }
   .fold-down { color: var(--good); font-weight: 600; }
   .fold-neutral { color: var(--text2); }
@@ -186,10 +238,28 @@
 
   <div class="panel" id="chartPanel" style="display:none;">
     <div class="panel-title">柱形图</div>
-    <div class="chart-title">按样品分组</div>
+    <div class="chart-toolbar">
+      <input type="text" class="chart-title-input" id="titleBySample" value="按样品分组" placeholder="图标题">
+      <button class="btn" onclick="saveChartAsPng('chartBySample','按样品分组')">保存 PNG</button>
+      <button class="btn" onclick="saveChartAsSvg('chartBySample','按样品分组')">下载 SVG</button>
+      <button class="btn" onclick="toggleAxisEditor('sample')">编辑横轴</button>
+    </div>
+    <div class="axis-editor" id="axisEditorSample">
+      <label>每行一个横轴标签（顺序对应样品顺序，留空则用样品名）</label>
+      <textarea id="axisLabelsSample" placeholder="0H&#10;12H&#10;24H"></textarea>
+    </div>
     <div class="chart-legend" id="legendBySample"></div>
     <div class="chart-wrap" id="chartBySample"></div>
-    <div class="chart-title" id="geneChartTitle" style="margin-top:16px;">按基因分组</div>
+    <div class="chart-toolbar" id="geneChartToolbar" style="margin-top:16px;">
+      <input type="text" class="chart-title-input" id="titleByGene" value="按基因分组" placeholder="图标题">
+      <button class="btn" onclick="saveChartAsPng('chartByGene','按基因分组')">保存 PNG</button>
+      <button class="btn" onclick="saveChartAsSvg('chartByGene','按基因分组')">下载 SVG</button>
+      <button class="btn" onclick="toggleAxisEditor('gene')">编辑横轴</button>
+    </div>
+    <div class="axis-editor" id="axisEditorGene">
+      <label>每行一个横轴标签（顺序对应基因顺序，留空则用基因名）</label>
+      <textarea id="axisLabelsGene" placeholder="CNNM1&#10;GAPDH"></textarea>
+    </div>
     <div class="chart-legend" id="legendByGene"></div>
     <div class="chart-wrap" id="chartByGene"></div>
     <div class="tc-hint" id="chartHint" style="margin-top:4px;"></div>
@@ -427,6 +497,9 @@ function compute() {
 // ------------------------------------------------------------------
 const PALETTE = ["#4e79a7","#f28e2b","#e15759","#76b7b2","#59a14f","#edc948","#b07aa1","#ff9da7","#9c755f","#bab0ac"];
 
+let axisLabelsBySample = [];
+let axisLabelsByGene = [];
+
 function renderCharts(chartData) {
   const cp = document.getElementById("chartPanel");
   const cbs = document.getElementById("chartBySample");
@@ -460,8 +533,8 @@ function renderCharts(chartData) {
   lgb.style.display = hasGeneChart ? "" : "none";
   cbg.style.display = hasGeneChart ? "" : "none";
 
-  drawBarChart(cbs, seriesByGene, "RQ (ΔΔCt)", chartData.map(r => r.name));
-  if (hasGeneChart) drawBarChart(cbg, seriesBySample, "RQ (ΔΔCt)", targetGenes);
+  drawBarChart(cbs, seriesByGene, "RQ (ΔΔCt)", getAxisLabels("sample", chartData.map(r => r.name)));
+  if (hasGeneChart) drawBarChart(cbg, seriesBySample, "RQ (ΔΔCt)", getAxisLabels("gene", targetGenes));
 
   lsb.replaceChildren();
   seriesByGene.forEach(s => {
@@ -481,6 +554,81 @@ function renderCharts(chartData) {
   }
   cp.style.display = "";
 }
+
+function getAxisLabels(which, defaults) {
+  const raw = which === "sample"
+    ? document.getElementById("axisLabelsSample").value
+    : document.getElementById("axisLabelsGene").value;
+  const lines = raw.split(/\r?\n/).map(s => s.trim());
+  const filled = lines.filter(s => s !== "");
+  if (!filled.length) return defaults;
+  return defaults.map((d, i) => lines[i] !== undefined && lines[i] !== "" ? lines[i] : d);
+}
+
+function toggleAxisEditor(which) {
+  const el = which === "sample"
+    ? document.getElementById("axisEditorSample")
+    : document.getElementById("axisEditorGene");
+  el.classList.toggle("show");
+  if (el.classList.contains("show")) el.querySelector("textarea").focus();
+}
+
+function saveChartAsPng(containerId, fallbackName) {
+  const svgEl = document.getElementById(containerId).querySelector("svg");
+  if (!svgEl) return;
+  const titleInput = containerId === "chartBySample"
+    ? document.getElementById("titleBySample")
+    : document.getElementById("titleByGene");
+  const name = (titleInput.value.trim() || fallbackName) + ".png";
+  const xml = new XMLSerializer().serializeToString(svgEl);
+  const svgBlob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  const img = new Image();
+  img.onload = () => {
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = svgEl.viewBox.baseVal.width * scale;
+    canvas.height = svgEl.viewBox.baseVal.height * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(blob => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }, "image/png");
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    saveChartAsSvg(containerId, fallbackName.replace(/\.png$/, ""));
+  };
+  img.src = url;
+}
+
+function saveChartAsSvg(containerId, fallbackName) {
+  const svgEl = document.getElementById(containerId).querySelector("svg");
+  if (!svgEl) return;
+  const titleInput = containerId === "chartBySample"
+    ? document.getElementById("titleBySample")
+    : document.getElementById("titleByGene");
+  const name = (titleInput.value.trim() || fallbackName) + ".svg";
+  const xml = new XMLSerializer().serializeToString(svgEl);
+  const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+["titleBySample","titleByGene","axisLabelsSample","axisLabelsGene"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("input", compute);
+});
 
 function drawBarChart(container, series, yLabel, groupNames) {
   const groups = [];
