@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qPCR Calculator</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --border: #dde1e6;
+    --text: #1a1f25;
+    --text2: #5c6470;
+    --accent: #2563eb;
+    --accent2: #1e40af;
+    --good: #059669;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --radius: 6px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 24px;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: var(--text2); font-size: 13px; margin-bottom: 20px; }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .panel-title { font-weight: 600; font-size: 14px; margin-bottom: 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 13px;
+    vertical-align: middle;
+  }
+  th {
+    background: #f1f3f5;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  td.result { background: #fafbfc; }
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 4px 6px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text);
+    outline: none;
+    border-radius: 3px;
+  }
+  input:hover { border-color: var(--border); }
+  input:focus { border-color: var(--accent); background: var(--surface); }
+  input.invalid { border-color: var(--bad); background: #fef2f2; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    padding: 6px 12px;
+    font-size: 13px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn:hover { background: #f1f3f5; }
+  .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+  .btn-primary:hover { background: var(--accent2); }
+  .btn-danger { color: var(--bad); }
+  .btn-danger:hover { background: #fef2f2; border-color: var(--bad); }
+  .row-actions { display: flex; gap: 4px; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+  .formula {
+    background: #f8f9fa;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    font-size: 13px;
+    color: var(--text2);
+    margin-bottom: 16px;
+    line-height: 1.8;
+  }
+  .formula code {
+    background: #e9ecef;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .tc-hint { color: var(--text2); font-size: 12px; margin-top: 8px; }
+  .tc-hint code { background: #e9ecef; padding: 1px 4px; border-radius: 2px; font-size: 11px; }
+  .fold-up { color: var(--bad); font-weight: 600; }
+  .fold-down { color: var(--good); font-weight: 600; }
+  .fold-neutral { color: var(--text2); }
+  .copy-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: white;
+    padding: 8px 16px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 100;
+  }
+  .copy-toast.show { opacity: 1; }
+  @media print {
+    .toolbar, .btn { display: none; }
+    body { padding: 0; background: white; }
+    .panel { border: none; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>qPCR Calculator</h1>
+  <div class="subtitle">输入 Ct 值，自动计算 ΔCt、ΔΔCt 和相对表达量 (2^-ΔΔCt)</div>
+
+  <div class="formula">
+    <b>计算公式</b>：<br>
+    ΔCt = Ct<sub>目的基因</sub> - Ct<sub>内参基因</sub> &nbsp;&nbsp;
+    ΔΔCt = ΔCt<sub>处理组</sub> - ΔCt<sub>对照组</sub> &nbsp;&nbsp;
+    Fold Change = 2<sup>-ΔΔCt</sup><br>
+    <span style="color:var(--text2); font-size:12px;">对照组下拉框中选择基准样品，默认用第一行。结果 > 1 上调，< 1 下调。</span>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">输入数据</div>
+    <div class="toolbar">
+      <button class="btn" onclick="addRow()">+ 添加样品</button>
+      <button class="btn" onclick="addColumn()">+ 添加目的基因</button>
+      <button class="btn btn-danger" onclick="clearAll()">清空</button>
+      <span style="flex:1"></span>
+      <button class="btn btn-primary" onclick="copyResults()">复制结果</button>
+      <button class="btn" onclick="window.print()">打印</button>
+    </div>
+    <div style="overflow-x:auto;">
+      <table id="inputTable">
+        <thead id="thead"></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="tc-hint">
+      Ct 值直接输入数字即可（如 <code>22.48</code>）。空白或非数字的单元格会被跳过，不参与计算。
+    </div>
+  </div>
+
+  <div class="panel" id="resultPanel" style="display:none;">
+    <div class="panel-title">计算结果</div>
+    <div class="tc-hint" id="resultHint" style="margin-bottom:8px;"></div>
+    <div style="overflow-x:auto;">
+      <table id="resultTable">
+        <thead id="rthead"></thead>
+        <tbody id="rtbody"></tbody>
+      </table>
+    </div>
+    <div class="tc-hint" id="controlLabel" style="margin-top:8px;"></div>
+  </div>
+</div>
+
+<div class="copy-toast" id="copyToast">已复制到剪贴板</div>
+
+<script>
+"use strict";
+
+let targetGenes = ["CNNM1"];
+let rows = [];
+let controlIndex = 0;
+let nextId = 1;
+
+function esc(s) {
+  return String(s).replace(/&/g,"&").replace(/</g,"<").replace(/>/g,">");
+}
+
+function initDefault() {
+  rows = [];
+  const defaults = [
+    { name: "0H",   ref: "12.88", targets: ["22.48"] },
+    { name: "12H",  ref: "13.81", targets: ["22.35"] },
+    { name: "24H",  ref: "12.99", targets: ["22.18"] },
+  ];
+  for (const d of defaults) {
+    rows.push({ id: nextId++, name: d.name, ref: d.ref, targets: [...d.targets] });
+  }
+}
+
+function renderHead() {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <th style="width:40px;">#</th>
+    <th style="min-width:100px;">样品名</th>
+    <th style="width:50px;">对照</th>
+    <th style="min-width:90px;">内参 Ct</th>
+    ${targetGenes.map((g,i)=>`<th style="min-width:90px;">${esc(g)} Ct</th>`).join("")}
+    <th style="width:60px;">操作</th>
+  `;
+  document.getElementById("thead").replaceChildren(tr);
+}
+
+function renderBody() {
+  const tb = document.getElementById("tbody");
+  tb.replaceChildren();
+  rows.forEach((row, ri) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td style="text-align:center;color:var(--text2);">${ri+1}</td>
+      <td><input type="text" data-row="${ri}" data-field="name" value="${esc(row.name)}" placeholder="样品名"></td>
+      <td style="text-align:center;"><input type="radio" name="ctrl" data-row="${ri}" ${ri===controlIndex?"checked":""} style="width:auto;cursor:pointer;" title="选为对照"></td>
+      <td><input type="text" inputmode="decimal" data-row="${ri}" data-field="ref" value="${esc(row.ref)}" placeholder="如 15.2"></td>
+      ${row.targets.map((v,ti)=>`<td><input type="text" inputmode="decimal" data-row="${ri}" data-target="${ti}" value="${esc(v)}" placeholder="Ct"></td>`).join("")}
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-danger" style="padding:3px 8px;" onclick="removeRow(${ri})" title="删除此行">&times;</button>
+        </div>
+      </td>
+    `;
+    tb.appendChild(tr);
+  });
+  // event delegation
+  tb.querySelectorAll("input").forEach(inp => {
+    inp.addEventListener("input", onInput);
+    inp.addEventListener("focus", e => e.target.select());
+  });
+}
+
+function onInput(e) {
+  const t = e.target;
+  const ri = +t.dataset.row;
+  if (t.dataset.field === "name") rows[ri].name = t.value;
+  else if (t.dataset.field === "ref") rows[ri].ref = t.value;
+  else if (t.dataset.target !== undefined) rows[ri].targets[+t.dataset.target] = t.value;
+  t.classList.remove("invalid");
+  compute();
+}
+
+document.addEventListener("change", e => {
+  if (e.target.name === "ctrl") {
+    controlIndex = +e.target.dataset.row;
+    compute();
+  }
+});
+
+function addRow() {
+  rows.push({ id: nextId++, name: "", ref: "", targets: targetGenes.map(()=> "") });
+  renderBody();
+  const inputs = document.querySelectorAll('#tbody input[data-field="name"]');
+  if (inputs.length) inputs[inputs.length-1].focus();
+}
+
+function addColumn() {
+  const name = prompt("目的基因名称:", "Gene" + (targetGenes.length+1));
+  if (!name) return;
+  targetGenes.push(name);
+  rows.forEach(r => r.targets.push(""));
+  renderHead();
+  renderBody();
+  compute();
+}
+
+function removeRow(i) {
+  rows.splice(i, 1);
+  if (controlIndex >= rows.length) controlIndex = Math.max(0, rows.length - 1);
+  renderBody();
+  compute();
+}
+
+function clearAll() {
+  rows = [{ id: nextId++, name: "", ref: "", targets: targetGenes.map(()=> "") }];
+  controlIndex = 0;
+  renderBody();
+  compute();
+}
+
+function parseCt(v) {
+  if (v == null || String(v).trim() === "") return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+
+function fmt(n, digits = 2) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return n.toFixed(digits);
+}
+
+function compute() {
+  const rp = document.getElementById("resultPanel");
+  const rt = document.getElementById("rthead");
+  const rb = document.getElementById("rtbody");
+  const ctrlRow = rows[controlIndex];
+  const hint = document.getElementById("resultHint");
+
+  // check if there is any data
+  const hasData = rows.some(r => parseCt(r.ref) !== null || r.targets.some(v => parseCt(v) !== null));
+  if (!hasData || !ctrlRow) {
+    rp.style.display = "";
+    rt.replaceChildren();
+    rb.replaceChildren();
+    hint.textContent = "输入 Ct 值后，这里会自动生成 ΔCt、ΔΔCt 和 Fold Change。";
+    return;
+  }
+
+  const ctrlRefCt = parseCt(ctrlRow.ref);
+  const ctrlDelta = targetGenes.map((g,ti) => {
+    const tg = parseCt(ctrlRow.targets[ti]);
+    if (ctrlRefCt === null || tg === null) return null;
+    return tg - ctrlRefCt;
+  });
+
+  rt.replaceChildren();
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <th>样品</th>
+    <th>内参 Ct</th>
+    ${targetGenes.map((g,ti)=>`<th colspan="4" style="text-align:center;">${esc(g)}</th>`).join("")}
+  `;
+  rt.appendChild(tr);
+  const sub = document.createElement("tr");
+  sub.innerHTML = `
+    <th></th><th></th>
+    ${targetGenes.map(()=>`<th>Ct</th><th>ΔCt</th><th>ΔΔCt</th><th>Fold Change</th>`).join("")}
+  `;
+  rt.appendChild(sub);
+
+  rb.replaceChildren();
+  rows.forEach((row, ri) => {
+    const refCt = parseCt(row.ref);
+    const tr = document.createElement("tr");
+    let cells = `<td>${esc(row.name || "样品" + (ri+1))}</td><td>${fmt(refCt)}</td>`;
+    targetGenes.forEach((g,ti) => {
+      const tgCt = parseCt(row.targets[ti]);
+      const dCt = (refCt !== null && tgCt !== null) ? tgCt - refCt : null;
+      const dDct = (dCt !== null && ctrlDelta[ti] !== null) ? dCt - ctrlDelta[ti] : null;
+      const fc = dDct !== null ? Math.pow(2, -dDct) : null;
+      let fcClass = "fold-neutral";
+      let fcText = "—";
+      if (fc !== null) {
+        fcText = fc.toFixed(3);
+        if (fc > 1.15) fcClass = "fold-up";
+        else if (fc < 0.87) fcClass = "fold-down";
+      }
+      cells += `<td>${fmt(tgCt)}</td><td class="result">${fmt(dCt)}</td><td class="result">${fmt(dDct)}</td><td class="result ${fcClass}" style="font-weight:600;">${fcText}</td>`;
+    });
+    tr.innerHTML = cells;
+    rb.appendChild(tr);
+  });
+
+  document.getElementById("controlLabel").textContent =
+    `对照样品：${ctrlRow.name || "样品" + (controlIndex+1)}  |  对照 ΔCt（${targetGenes.join(", ")}）：${ctrlDelta.map(d=>fmt(d)).join(", ")}`;
+  hint.textContent = "";
+  rp.style.display = "";
+}
+
+function copyResults() {
+  const table = document.getElementById("resultTable");
+  let tsv = [];
+  for (const tr of table.rows) {
+    const cells = [];
+    for (const td of tr.cells) cells.push(td.textContent.trim());
+    tsv.push(cells.join("\t"));
+  }
+  const text = tsv.join("\n");
+  navigator.clipboard.writeText(text).then(() => {
+    const toast = document.getElementById("copyToast");
+    toast.classList.add("show");
+    setTimeout(() => toast.classList.remove("show"), 1500);
+  }).catch(() => {
+    // fallback for file:// protocol
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    const toast = document.getElementById("copyToast");
+    toast.textContent = "已复制";
+    toast.classList.add("show");
+    setTimeout(() => { toast.classList.remove("show"); toast.textContent = "已复制到剪贴板"; }, 1500);
+  });
+}
+
+// init
+initDefault();
+renderHead();
+renderBody();
+compute();
+</script>
+</body>
+</html>
