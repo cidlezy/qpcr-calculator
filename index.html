@@ -106,6 +106,12 @@
   }
   .tc-hint { color: var(--text2); font-size: 12px; margin-top: 8px; }
   .tc-hint code { background: #e9ecef; padding: 1px 4px; border-radius: 2px; font-size: 11px; }
+  .chart-wrap { width: 100%; margin-bottom: 16px; }
+  .chart-wrap svg { width: 100%; height: auto; display: block; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; font-size: 12px; color: var(--text); }
+  .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+  .chart-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--text); }
   .fold-up { color: var(--bad); font-weight: 600; }
   .fold-down { color: var(--good); font-weight: 600; }
   .fold-neutral { color: var(--text2); }
@@ -162,7 +168,7 @@
       </table>
     </div>
     <div class="tc-hint">
-      Ct 值直接输入数字即可（如 <code>22.48</code>）。空白或非数字的单元格会被跳过，不参与计算。
+      Ct 值直接输入数字即可（如 <code>22.48</code>）；如有技术重复，用逗号分隔（如 <code>22.1,22.3,22.4</code>），程序会自动取平均并计算 SEM。空白或非数字的单元格会被跳过，不参与计算。
     </div>
   </div>
 
@@ -176,6 +182,17 @@
       </table>
     </div>
     <div class="tc-hint" id="controlLabel" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="panel" id="chartPanel" style="display:none;">
+    <div class="panel-title">柱形图</div>
+    <div class="chart-title">按样品分组</div>
+    <div class="chart-legend" id="legendBySample"></div>
+    <div class="chart-wrap" id="chartBySample"></div>
+    <div class="chart-title" id="geneChartTitle" style="margin-top:16px;">按基因分组</div>
+    <div class="chart-legend" id="legendByGene"></div>
+    <div class="chart-wrap" id="chartByGene"></div>
+    <div class="tc-hint" id="chartHint" style="margin-top:4px;"></div>
   </div>
 </div>
 
@@ -298,6 +315,21 @@ function parseCt(v) {
   return isNaN(n) ? null : n;
 }
 
+// Support comma-separated technical replicates, e.g. "22.1,22.3,22.4"
+function parseCtStats(v) {
+  if (v == null || String(v).trim() === "") return null;
+  const parts = String(v).split(/[,;]/).map(s => s.trim()).filter(s => s !== "");
+  const nums = parts.map(s => parseFloat(s)).filter(n => !isNaN(n));
+  if (!nums.length) return null;
+  const mean = nums.reduce((a,b)=>a+b,0) / nums.length;
+  let sem = 0;
+  if (nums.length > 1) {
+    const variance = nums.reduce((a,b)=>a+(b-mean)*(b-mean),0) / (nums.length-1);
+    sem = Math.sqrt(variance) / Math.sqrt(nums.length);
+  }
+  return { mean, sem, n: nums.length };
+}
+
 function fmt(n, digits = 2) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   return n.toFixed(digits);
@@ -307,24 +339,31 @@ function compute() {
   const rp = document.getElementById("resultPanel");
   const rt = document.getElementById("rthead");
   const rb = document.getElementById("rtbody");
+  const cp = document.getElementById("chartPanel");
   const ctrlRow = rows[controlIndex];
   const hint = document.getElementById("resultHint");
 
   // check if there is any data
-  const hasData = rows.some(r => parseCt(r.ref) !== null || r.targets.some(v => parseCt(v) !== null));
+  const hasData = rows.some(r => parseCtStats(r.ref) !== null || r.targets.some(v => parseCtStats(v) !== null));
   if (!hasData || !ctrlRow) {
     rp.style.display = "";
     rt.replaceChildren();
     rb.replaceChildren();
+    cp.style.display = "none";
     hint.textContent = "输入 Ct 值后，这里会自动生成 ΔCt、ΔΔCt 和 Fold Change。";
     return;
   }
 
-  const ctrlRefCt = parseCt(ctrlRow.ref);
+  const ctrlRef = parseCtStats(ctrlRow.ref);
   const ctrlDelta = targetGenes.map((g,ti) => {
-    const tg = parseCt(ctrlRow.targets[ti]);
-    if (ctrlRefCt === null || tg === null) return null;
-    return tg - ctrlRefCt;
+    const tg = parseCtStats(ctrlRow.targets[ti]);
+    if (ctrlRef === null || tg === null) return null;
+    return { dCt: tg.mean - ctrlRef.mean, sem: Math.sqrt(tg.sem*tg.sem + ctrlRef.sem*ctrlRef.sem) };
+  });
+
+  const anyReplicates = rows.some(r => {
+    const rs = parseCtStats(r.ref); if (rs && rs.n > 1) return true;
+    return r.targets.some(v => { const ts = parseCtStats(v); return ts && ts.n > 1; });
   });
 
   rt.replaceChildren();
@@ -332,26 +371,36 @@ function compute() {
   tr.innerHTML = `
     <th>样品</th>
     <th>内参 Ct</th>
-    ${targetGenes.map((g,ti)=>`<th colspan="4" style="text-align:center;">${esc(g)}</th>`).join("")}
+    ${targetGenes.map((g,ti)=>`<th colspan="${anyReplicates?5:4}" style="text-align:center;">${esc(g)}</th>`).join("")}
   `;
   rt.appendChild(tr);
   const sub = document.createElement("tr");
   sub.innerHTML = `
     <th></th><th></th>
-    ${targetGenes.map(()=>`<th>Ct</th><th>ΔCt</th><th>ΔΔCt</th><th>Fold Change</th>`).join("")}
+    ${targetGenes.map(()=>`<th>Ct</th><th>ΔCt</th><th>ΔΔCt</th><th>Fold Change</th>${anyReplicates?'<th>SEM</th>':''}`).join("")}
   `;
   rt.appendChild(sub);
 
+  const chartData = [];
   rb.replaceChildren();
   rows.forEach((row, ri) => {
-    const refCt = parseCt(row.ref);
+    const refStats = parseCtStats(row.ref);
     const tr = document.createElement("tr");
-    let cells = `<td>${esc(row.name || "样品" + (ri+1))}</td><td>${fmt(refCt)}</td>`;
+    let cells = `<td>${esc(row.name || "样品" + (ri+1))}</td><td>${fmt(refStats ? refStats.mean : null)}</td>`;
+    const rowChart = { name: row.name || ("样品" + (ri+1)), values: [] };
     targetGenes.forEach((g,ti) => {
-      const tgCt = parseCt(row.targets[ti]);
-      const dCt = (refCt !== null && tgCt !== null) ? tgCt - refCt : null;
-      const dDct = (dCt !== null && ctrlDelta[ti] !== null) ? dCt - ctrlDelta[ti] : null;
+      const tgtStats = parseCtStats(row.targets[ti]);
+      const dCt = (refStats !== null && tgtStats !== null) ? tgtStats.mean - refStats.mean : null;
+      const semDct = (refStats !== null && tgtStats !== null) ? Math.sqrt(tgtStats.sem*tgtStats.sem + refStats.sem*refStats.sem) : null;
+      const dDct = (dCt !== null && ctrlDelta[ti] !== null) ? dCt - ctrlDelta[ti].dCt : null;
+      const semDdct = (semDct !== null && ctrlDelta[ti] !== null) ? Math.sqrt(semDct*semDct + ctrlDelta[ti].sem*ctrlDelta[ti].sem) : null;
       const fc = dDct !== null ? Math.pow(2, -dDct) : null;
+      let errUp = null, errLow = null;
+      if (fc !== null && semDdct !== null && semDdct > 0) {
+        errUp = Math.pow(2, -(dDct - semDdct)) - fc;
+        errLow = fc - Math.pow(2, -(dDct + semDdct));
+      }
+      rowChart.values.push({ fold: fc, errUp, errLow });
       let fcClass = "fold-neutral";
       let fcText = "—";
       if (fc !== null) {
@@ -359,16 +408,154 @@ function compute() {
         if (fc > 1.15) fcClass = "fold-up";
         else if (fc < 0.87) fcClass = "fold-down";
       }
-      cells += `<td>${fmt(tgCt)}</td><td class="result">${fmt(dCt)}</td><td class="result">${fmt(dDct)}</td><td class="result ${fcClass}" style="font-weight:600;">${fcText}</td>`;
+      cells += `<td>${fmt(tgtStats ? tgtStats.mean : null)}</td><td class="result">${fmt(dCt)}</td><td class="result">${fmt(dDct)}</td><td class="result ${fcClass}" style="font-weight:600;">${fcText}</td>${anyReplicates?`<td class="result">${semDdct!==null && semDdct>0 ? semDdct.toFixed(3) : "—"}</td>`:''}`;
     });
     tr.innerHTML = cells;
     rb.appendChild(tr);
+    chartData.push(rowChart);
   });
 
   document.getElementById("controlLabel").textContent =
     `对照样品：${ctrlRow.name || "样品" + (controlIndex+1)}  |  对照 ΔCt（${targetGenes.join(", ")}）：${ctrlDelta.map(d=>fmt(d)).join(", ")}`;
   hint.textContent = "";
   rp.style.display = "";
+  renderCharts(chartData);
+}
+
+// ------------------------------------------------------------------
+// SVG bar charts (style modeled after Auto-qPCR matplotlib output)
+// ------------------------------------------------------------------
+const PALETTE = ["#4e79a7","#f28e2b","#e15759","#76b7b2","#59a14f","#edc948","#b07aa1","#ff9da7","#9c755f","#bab0ac"];
+
+function renderCharts(chartData) {
+  const cp = document.getElementById("chartPanel");
+  const cbs = document.getElementById("chartBySample");
+  const cbg = document.getElementById("chartByGene");
+  const lsb = document.getElementById("legendBySample");
+  const lgb = document.getElementById("legendByGene");
+  const geneTitle = document.getElementById("geneChartTitle");
+  const chartHint = document.getElementById("chartHint");
+
+  if (!chartData.length || !targetGenes.length) { cp.style.display = "none"; return; }
+
+  // series grouped by sample: one bar per gene inside each sample group
+  const seriesByGene = targetGenes.map((g, gi) => ({
+    name: g,
+    color: PALETTE[gi % PALETTE.length],
+    values: chartData.map(r => r.values[gi])
+  }));
+  const seriesBySample = rows.map((r, ri) => ({
+    name: r.name || ("样品" + (ri+1)),
+    color: PALETTE[ri % PALETTE.length],
+    values: targetGenes.map((g, gi) => chartData[ri].values[gi])
+  }));
+
+  const anyErr = chartData.some(r => r.values.some(v => v.errUp !== null && v.errUp > 0 || v.errLow !== null && v.errLow > 0));
+  chartHint.textContent = anyErr
+    ? "误差线由技术重复的 SEM 传播得到（在 Ct 输入框中用逗号分隔多个重复即可启用）。"
+    : "只输入单个 Ct 值时不显示误差线；如需误差线，可在 Ct 输入框中用逗号分隔多个技术重复（如 22.1,22.3,22.4）。";
+
+  const hasGeneChart = targetGenes.length > 1;
+  geneTitle.style.display = hasGeneChart ? "" : "none";
+  lgb.style.display = hasGeneChart ? "" : "none";
+  cbg.style.display = hasGeneChart ? "" : "none";
+
+  drawBarChart(cbs, seriesByGene, "RQ (ΔΔCt)", chartData.map(r => r.name));
+  if (hasGeneChart) drawBarChart(cbg, seriesBySample, "RQ (ΔΔCt)", targetGenes);
+
+  lsb.replaceChildren();
+  seriesByGene.forEach(s => {
+    const item = document.createElement("span");
+    item.className = "legend-item";
+    item.innerHTML = `<span class="legend-swatch" style="background:${s.color};"></span>${esc(s.name)}`;
+    lsb.appendChild(item);
+  });
+  if (hasGeneChart) {
+    lgb.replaceChildren();
+    seriesBySample.forEach(s => {
+      const item = document.createElement("span");
+      item.className = "legend-item";
+      item.innerHTML = `<span class="legend-swatch" style="background:${s.color};"></span>${esc(s.name)}`;
+      lgb.appendChild(item);
+    });
+  }
+  cp.style.display = "";
+}
+
+function drawBarChart(container, series, yLabel, groupNames) {
+  const groups = [];
+  const groupCount = series[0].values.length;
+  for (let i = 0; i < groupCount; i++) groups.push(i);
+
+  const width = 900, height = 420;
+  const margin = { top: 20, right: 20, bottom: 70, left: 70 };
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+
+  const allVals = [];
+  series.forEach(s => s.values.forEach(v => { if (v.fold !== null) allVals.push(v.fold); if (v.errUp) allVals.push(v.fold + v.errUp); }));
+  const maxVal = allVals.length ? Math.max(...allVals) * 1.15 : 1;
+  const yMax = Math.max(maxVal, 1.05);
+
+  const xScale = i => margin.left + (i + 0.5) * (innerW / groupCount);
+  const groupWidth = innerW / groupCount;
+  const barWidth = Math.min(48, groupWidth / (series.length + 0.6));
+  const yScale = v => margin.top + innerH - (v / yMax) * innerH;
+
+  let bars = "";
+  series.forEach((s, si) => {
+    s.values.forEach((v, gi) => {
+      if (v.fold === null) return;
+      const x = xScale(gi) - (series.length * barWidth) / 2 + si * barWidth;
+      const y = yScale(v.fold);
+      const h = yScale(0) - y;
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(h,1).toFixed(1)}" fill="${s.color}" stroke="white" stroke-width="0.5"/>`;
+      if (v.errUp !== null && (v.errUp > 0 || v.errLow > 0)) {
+        const cx = x + barWidth / 2;
+        const yTop = yScale(v.fold + v.errUp);
+        const yBot = yScale(Math.max(v.fold - v.errLow, 0));
+        bars += `<line x1="${cx}" y1="${yTop.toFixed(1)}" x2="${cx}" y2="${yBot.toFixed(1)}" stroke="#333" stroke-width="1.4"/>`;
+        bars += `<line x1="${(cx-3).toFixed(1)}" y1="${yTop.toFixed(1)}" x2="${(cx+3).toFixed(1)}" y2="${yTop.toFixed(1)}" stroke="#333" stroke-width="1.4"/>`;
+        bars += `<line x1="${(cx-3).toFixed(1)}" y1="${yBot.toFixed(1)}" x2="${(cx+3).toFixed(1)}" y2="${yBot.toFixed(1)}" stroke="#333" stroke-width="1.4"/>`;
+      }
+    });
+  });
+
+  // axis lines
+  const axisBottom = `<line x1="${margin.left}" y1="${(margin.top+innerH)}" x2="${width-margin.right}" y2="${(margin.top+innerH)}" stroke="#333" stroke-width="1.2"/>`;
+  const axisLeft = `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top+innerH}" stroke="#333" stroke-width="1.2"/>`;
+
+  // y ticks
+  const ticks = [];
+  const tickCount = 5;
+  for (let i = 0; i <= tickCount; i++) {
+    const val = yMax * i / tickCount;
+    const y = yScale(val);
+    ticks.push(`<line x1="${margin.left-4}" y1="${y.toFixed(1)}" x2="${margin.left}" y2="${y.toFixed(1)}" stroke="#333" stroke-width="1"/>`);
+    ticks.push(`<text x="${margin.left-8}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="11" fill="#333">${val.toFixed(1)}</text>`);
+  }
+
+  // baseline at 1
+  let baseline = "";
+  if (yMax > 1) {
+    const y = yScale(1);
+    baseline = `<line x1="${margin.left}" y1="${y.toFixed(1)}" x2="${width-margin.right}" y2="${y.toFixed(1)}" stroke="#999" stroke-width="1" stroke-dasharray="4 3"/>`;
+  }
+
+  // x labels (group names)
+  const xLabels = groupNames.map((name, i) => `<text x="${xScale(i).toFixed(1)}" y="${margin.top+innerH+18}" text-anchor="middle" font-size="11" fill="#333">${esc(name)}</text>`).join("");
+
+  const svg = `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="qPCR bar chart">
+    <rect x="0" y="0" width="${width}" height="${height}" fill="white"/>
+    ${baseline}
+    ${bars}
+    ${axisBottom}
+    ${axisLeft}
+    ${ticks.join("")}
+    ${xLabels}
+    <text transform="translate(16,${(margin.top+innerH/2).toFixed(1)}) rotate(-90)" text-anchor="middle" font-size="12" fill="#333">${esc(yLabel)}</text>
+  </svg>`;
+  container.innerHTML = svg;
 }
 
 function copyResults() {
