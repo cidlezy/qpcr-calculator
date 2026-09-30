@@ -164,6 +164,30 @@
   }
   .chart-title-input:hover { border-color: var(--border); }
   .chart-title-input:focus { border-color: var(--accent); background: var(--surface); }
+  .py-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .py-figure { margin-top: 12px; }
+  .py-figure img {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .py-figure .chart-toolbar { margin: 8px 0 0; }
+  .py-status { font-size: 12px; color: var(--text2); margin-top: 8px; min-height: 18px; }
+  .py-status.error { color: var(--bad); }
+  .py-status.busy { color: var(--accent); }
+  .ref-name-input {
+    width: 130px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 12px;
+    font-family: inherit;
+    color: var(--text);
+    background: var(--surface);
+  }
   .fold-up { color: var(--bad); font-weight: 600; }
   .fold-down { color: var(--good); font-weight: 600; }
   .fold-neutral { color: var(--text2); }
@@ -222,6 +246,11 @@
     <div class="tc-hint">
       Ct 值直接输入数字即可（如 <code>22.48</code>）；如有技术重复，用逗号分隔（如 <code>22.1,22.3,22.4</code>），程序会自动取平均并计算 SEM。空白或非数字的单元格会被跳过，不参与计算。
     </div>
+    <div class="tc-hint" style="margin-top:6px;">
+      内参基因名
+      <input type="text" class="ref-name-input" id="refGeneName" value="Actin" placeholder="Actin">
+      <span style="margin-left:4px;">用于导出数据和 Python 出图时的分组标签，可写成 β-Actin、GAPDH 等。</span>
+    </div>
   </div>
 
   <div class="panel" id="resultPanel" style="display:none;">
@@ -263,6 +292,26 @@
     <div class="chart-legend" id="legendByGene"></div>
     <div class="chart-wrap" id="chartByGene"></div>
     <div class="tc-hint" id="chartHint" style="margin-top:4px;"></div>
+
+    <div class="py-block">
+      <div class="panel-title">用 Python 出图（matplotlib，与本仓库脚本一致）</div>
+      <div class="tc-hint" style="margin-bottom:8px;">
+        直接在浏览器里运行随本站提供的 <code>qpcr_plot.py</code>，得到的图和你在本地运行脚本完全一样（300 dpi PNG + 矢量 SVG）。
+首次点击需要下载 Python 运行环境（约 1–3 分钟，视网速而定），之后会被浏览器缓存。
+        网页里的 Python 环境不含中文字体，图内文字请使用英文或数字，中文会显示成方框。
+      </div>
+      <div class="chart-toolbar">
+        <button class="btn btn-primary" id="pyFigBtn" onclick="generatePythonFigure()">用 Python 出图</button>
+        <button class="btn" onclick="exportCsv()">导出数据 CSV</button>
+        <button class="btn" onclick="downloadPyScript()">下载 qpcr_plot.py</button>
+      </div>
+      <div class="chart-toolbar" style="margin-bottom:0;">
+        <input type="text" class="chart-title-input" id="pyTitle" value="Crotonic acid treatment (A549)" placeholder="图标题">
+        <input type="text" class="chart-title-input" id="pyYLabel" value="Relative mRNA level (RQ)" placeholder="纵轴标签">
+      </div>
+      <div class="py-status" id="pyStatusLine"></div>
+      <div id="pyResult"></div>
+    </div>
   </div>
 </div>
 
@@ -277,7 +326,7 @@ let controlIndex = 0;
 let nextId = 1;
 
 function esc(s) {
-  return String(s).replace(/&/g,"&").replace(/</g,"<").replace(/>/g,">");
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
 function initDefault() {
@@ -486,7 +535,7 @@ function compute() {
   });
 
   document.getElementById("controlLabel").textContent =
-    `对照样品：${ctrlRow.name || "样品" + (controlIndex+1)}  |  对照 ΔCt（${targetGenes.join(", ")}）：${ctrlDelta.map(d=>fmt(d)).join(", ")}`;
+    `对照样品：${ctrlRow.name || "样品" + (controlIndex+1)}  |  对照 ΔCt（${targetGenes.join(", ")}）：${ctrlDelta.map(d => d ? fmt(d.dCt) : "—").join(", ")}`;
   hint.textContent = "";
   rp.style.display = "";
   renderCharts(chartData);
@@ -506,7 +555,7 @@ function renderCharts(chartData) {
   const cbg = document.getElementById("chartByGene");
   const lsb = document.getElementById("legendBySample");
   const lgb = document.getElementById("legendByGene");
-  const geneTitle = document.getElementById("geneChartTitle");
+  const geneTitle = document.getElementById("geneChartToolbar");
   const chartHint = document.getElementById("chartHint");
 
   if (!chartData.length || !targetGenes.length) { cp.style.display = "none"; return; }
@@ -629,6 +678,271 @@ function saveChartAsSvg(containerId, fallbackName) {
   const el = document.getElementById(id);
   if (el) el.addEventListener("input", compute);
 });
+
+// ------------------------------------------------------------------
+// Python 出图：在浏览器里用 Pyodide 运行 qpcr_plot.py
+// ------------------------------------------------------------------
+const PYODIDE_VERSION = "0.26.4";
+const PYODIDE_BASE = "https://cdn.jsdelivr.net/pyodide/v" + PYODIDE_VERSION + "/full/";
+let pyodideInstance = null;
+let pyScriptSource = null;
+
+function setPyStatus(msg, kind) {
+  const el = document.getElementById("pyStatusLine");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = "py-status" + (kind ? " " + kind : "");
+}
+
+function splitNums(v) {
+  if (v == null) return [];
+  return String(v).split(/[,;]/)
+    .map(s => s.trim())
+    .filter(s => s !== "")
+    .map(s => parseFloat(s))
+    .filter(n => !isNaN(n));
+}
+
+function getRefGeneName() {
+  const el = document.getElementById("refGeneName");
+  const v = el ? el.value.trim() : "";
+  return v || "Actin";
+}
+
+function rowSampleName(row, ri) {
+  return (row && row.name ? row.name.trim() : "") || ("Sample" + (ri + 1));
+}
+
+// 把网页表格整理成 Python 需要的 DATA: {样品: {基因: [重复...]}}
+function collectData() {
+  const refName = getRefGeneName();
+  const data = {};
+  let control = "";
+  rows.forEach((r, ri) => {
+    const name = rowSampleName(r, ri);
+    if (ri === controlIndex) control = name;
+    const entry = {};
+    const refNums = splitNums(r.ref);
+    if (refNums.length) entry[refName] = refNums;
+    targetGenes.forEach((g, ti) => {
+      const nums = splitNums(r.targets[ti]);
+      if (nums.length) entry[g] = nums;
+    });
+    if (Object.keys(entry).length) data[name] = entry;
+  });
+  return { refName: refName, data: data, control: control };
+}
+
+function csvCell(s) {
+  const t = String(s);
+  return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+
+function downloadText(text, filename, mime) {
+  const blob = new Blob([text], { type: mime + ";charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function exportCsv() {
+  const { data } = collectData();
+  const lines = ["sample,gene,ct"];
+  Object.keys(data).forEach(s => {
+    Object.keys(data[s]).forEach(g => {
+      data[s][g].forEach(ct => lines.push(csvCell(s) + "," + csvCell(g) + "," + ct));
+    });
+  });
+  if (lines.length === 1) { setPyStatus("还没有可导出的数据。", "error"); return; }
+  downloadText(lines.join("\r\n"), "qpcr_data.csv", "text/csv");
+  setPyStatus("已导出 qpcr_data.csv，可直接用 qpcr_plot.py --csv qpcr_data.csv 出图。");
+}
+
+async function getPyScriptSource() {
+  if (pyScriptSource) return pyScriptSource;
+  if (!/^https?:$/.test(location.protocol)) {
+    throw new Error("以 file:// 打开时浏览器禁止读取同目录文件，请使用线上版本");
+  }
+  const resp = await fetch("qpcr_plot.py", { cache: "no-cache" });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  pyScriptSource = await resp.text();
+  return pyScriptSource;
+}
+
+async function downloadPyScript() {
+  try {
+    const src = await getPyScriptSource();
+    downloadText(src, "qpcr_plot.py", "text/x-python");
+    setPyStatus("已下载 qpcr_plot.py。本地运行：python qpcr_plot.py --csv qpcr_data.csv");
+  } catch (err) {
+    setPyStatus("无法读取 qpcr_plot.py：" + err.message + "。可从 GitHub 仓库直接下载该文件。", "error");
+  }
+}
+
+async function ensurePyodide() {
+  if (pyodideInstance) return pyodideInstance;
+  if (!window.loadPyodide) {
+    setPyStatus("正在下载 Python 运行环境（首次约 1–3 分钟，请保持页面打开）…", "busy");
+    await new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = PYODIDE_BASE + "pyodide.js";
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("无法加载 Pyodide，可能是网络无法访问 cdn.jsdelivr.net"));
+      document.head.appendChild(s);
+    });
+  }
+  setPyStatus("正在初始化 Python…", "busy");
+  const py = await window.loadPyodide({ indexURL: PYODIDE_BASE });
+  setPyStatus("正在加载 numpy 与 matplotlib…", "busy");
+  await py.loadPackage(["matplotlib"]);
+  pyodideInstance = py;
+  return py;
+}
+
+// 在 Python 里加载 qpcr_plot.py，注入数据，生成图并取回 base64
+const PY_DRIVER = [
+  "import base64, io, json, types, importlib.util",
+  "import matplotlib",
+  "matplotlib.use('Agg')",
+  "import matplotlib.pyplot as plt",
+  "",
+  "cfg = json.loads(CONFIG_JSON)",
+  "spec = importlib.util.spec_from_file_location('qpcr_plot_user', 'qpcr_plot.py')",
+  "mod = importlib.util.module_from_spec(spec)",
+  "spec.loader.exec_module(mod)",
+  "",
+  "mod.DATA = cfg['data']",
+  "mod.REFERENCE_GENE = cfg['ref']",
+  "mod.CONTROL_SAMPLE = cfg['control']",
+  "args = types.SimpleNamespace(",
+  "    ylabel=cfg['ylabel'], xlabel=cfg['xlabel'],",
+  "    title=cfg['title'], gene_chart=cfg['gene_chart'])",
+  "samples, targets, results = mod.compute(mod.DATA, cfg['ref'], cfg['control'])",
+  "mod.setup_chinese_font()",
+  "figs = mod.make_figures(samples, targets, results, args)",
+  "",
+  "lookup = {(r.sample, r.gene): r for r in results}",
+  "table = []",
+  "for s in samples:",
+  "    for g in targets:",
+  "        r = lookup[(s, g)]",
+  "        table.append([s, g, r.ct, r.dct, r.ddct, r.rq])",
+  "",
+  "figures = []",
+  "for tag, fig in figs:",
+  "    png = io.BytesIO()",
+  "    fig.savefig(png, format='png', dpi=300, bbox_inches='tight', facecolor='white')",
+  "    svg = io.BytesIO()",
+  "    fig.savefig(svg, format='svg', bbox_inches='tight', facecolor='white')",
+  "    figures.append({'tag': tag,",
+  "                    'png': base64.b64encode(png.getvalue()).decode('ascii'),",
+  "                    'svg': svg.getvalue().decode('utf-8')})",
+  "    plt.close(fig)",
+  "json.dumps({'table': table, 'figures': figures})",
+].join("\n");
+
+function renderPythonResult(res) {
+  const box = document.getElementById("pyResult");
+  box.replaceChildren();
+
+  if (res.table && res.table.length) {
+    const table = document.createElement("table");
+    table.style.marginTop = "10px";
+    const head = document.createElement("tr");
+    ["样品", "基因", "Ct", "ΔCt", "ΔΔCt", "RQ (2^-ΔΔCt)"].forEach(h => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      head.appendChild(th);
+    });
+    table.appendChild(head);
+    res.table.forEach(row => {
+      const tr = document.createElement("tr");
+      row.forEach((v, i) => {
+        const td = document.createElement("td");
+        td.textContent = (i < 2) ? String(v) : Number(v).toFixed(i === 5 ? 3 : 2);
+        if (i >= 2) td.className = "result";
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    box.appendChild(table);
+  }
+
+  (res.figures || []).forEach(f => {
+    const wrap = document.createElement("div");
+    wrap.className = "py-figure";
+    const img = document.createElement("img");
+    img.src = "data:image/png;base64," + f.png;
+    img.alt = "Python figure " + f.tag;
+    wrap.appendChild(img);
+
+    const bar = document.createElement("div");
+    bar.className = "chart-toolbar";
+
+    const pngLink = document.createElement("a");
+    pngLink.className = "btn";
+    pngLink.href = "data:image/png;base64," + f.png;
+    pngLink.download = "qpcr_python_" + f.tag + ".png";
+    pngLink.textContent = "下载 PNG (300 dpi)";
+    bar.appendChild(pngLink);
+
+    const svgLink = document.createElement("a");
+    svgLink.className = "btn";
+    svgLink.href = URL.createObjectURL(new Blob([f.svg], { type: "image/svg+xml;charset=utf-8" }));
+    svgLink.download = "qpcr_python_" + f.tag + ".svg";
+    svgLink.textContent = "下载 SVG (矢量)";
+    bar.appendChild(svgLink);
+
+    wrap.appendChild(bar);
+    box.appendChild(wrap);
+  });
+}
+
+async function generatePythonFigure() {
+  const btn = document.getElementById("pyFigBtn");
+  const box = document.getElementById("pyResult");
+  btn.disabled = true;
+  box.replaceChildren();
+  try {
+    const { refName, data, control } = collectData();
+    if (!Object.keys(data).length) { setPyStatus("请先输入 Ct 值。", "error"); return; }
+    if (!data[control]) { setPyStatus("对照样品（" + control + "）没有 Ct 数据，请检查。", "error"); return; }
+
+    const title = document.getElementById("pyTitle").value.trim();
+    const ylabel = document.getElementById("pyYLabel").value.trim() || "Relative mRNA level (RQ)";
+    const cfg = {
+      ref: refName,
+      control: control,
+      data: data,
+      title: title,
+      xlabel: "",
+      ylabel: ylabel,
+      gene_chart: targetGenes.length > 1
+    };
+
+    const py = await ensurePyodide();
+    const src = await getPyScriptSource();
+    py.FS.writeFile("qpcr_plot.py", src);
+    py.globals.set("CONFIG_JSON", JSON.stringify(cfg));
+
+    setPyStatus("正在用 Python 绘图…", "busy");
+    const out = await py.runPythonAsync(PY_DRIVER);
+    renderPythonResult(JSON.parse(out));
+
+    const hasCJK = /[^\x00-\x7F]/.test(title + ylabel + refName + targetGenes.join(""));
+    setPyStatus(hasCJK
+      ? "已生成。注意：图内文字含非 ASCII 字符，网页版 Python 缺中文字体，可能会显示成方框；本地脚本不受影响。"
+      : "已生成。");
+  } catch (err) {
+    setPyStatus("Python 出图失败：" + (err && err.message ? err.message : err), "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 function drawBarChart(container, series, yLabel, groupNames) {
   const groups = [];
